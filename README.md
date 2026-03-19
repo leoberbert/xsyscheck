@@ -5,12 +5,12 @@
 `xsyscheck` is an enterprise-focused fork of `xsos` for fast Linux host triage.
 It inspects either a live system or an extracted sosreport and prints an operator-friendly diagnostic report.
 
-## Repository
+## 📦 Repository
 
 - Fork repository: `https://github.com/leoberbert/xsyscheck`
 - Upstream project: `https://github.com/ryran/xsos`
 
-## Credits and Lineage
+## 🧬 Credits and Lineage
 
 This project is a fork of `xsos`, and upstream credit is preserved intentionally.
 
@@ -18,7 +18,7 @@ This project is a fork of `xsos`, and upstream credit is preserved intentionally
 - Original project: `https://github.com/ryran/xsos`
 - Fork maintainer: **Leonardo Berbert**
 
-## Highlights
+## ✨ Highlights
 
 - Works on legacy enterprise environments (including older RHEL families).
 - Single-file Bash tool, easy to copy/run in restricted systems.
@@ -32,7 +32,7 @@ This project is a fork of `xsos`, and upstream credit is preserved intentionally
   - NUMA mode/topology
   - socket state summary in `--ss`
 
-## Execution Modes
+## ⚙️ Execution Modes
 
 1. **Live system mode**
 - Run directly on a host.
@@ -46,7 +46,7 @@ This project is a fork of `xsos`, and upstream credit is preserved intentionally
 - Feed specific dumps using `--B/--C/...` options.
 - Useful when you only have partial artifacts.
 
-## Usage
+## 🚀 Usage
 
 ```bash
 xsyscheck [DISPLAY OPTIONS] [-6abokcfmdtlerngispSFIN] [SOSREPORT_ROOT]
@@ -54,7 +54,7 @@ xsyscheck [DISPLAY OPTIONS] {--B|--C|--F|--M|--D|--T|--L|--R|--N|--G|--I|--P FIL
 xsyscheck [-?|-h|--help]
 ```
 
-## Content Modules
+## 🧩 Content Modules
 
 - `-a, --all`: run all modules from `XSOS_ALL_VIEW`
 - `-b, --bios`: BIOS/firmware/system DMI details
@@ -85,7 +85,7 @@ xsyscheck [-?|-h|--help]
 - `-I, --ifcfg`: ifcfg summary table
 - `-N, --netstat`: `/proc/net/netstat` filtered counters
 
-## Display / Behavior Options
+## 🎛️ Display / Behavior Options
 
 - `--scrub`: scrub IP/MAC/hostname/serial/proxy credentials from output
 - `-6, --ipv6`: use IPv6 view in IP module
@@ -98,7 +98,7 @@ xsyscheck [-?|-h|--help]
 - `-y, --less`: pipe output to `less -SR`
 - `-z, --more`: pipe output to `more`
 
-## Special Input Options (BASH v4+)
+## 🗂️ Special Input Options (BASH v4+)
 
 - `--B=FILE`: dmidecode dump
 - `--C=FILE`: `/proc/cpuinfo` dump
@@ -114,7 +114,7 @@ xsyscheck [-?|-h|--help]
 - `--P=FILE`: `ps aux` dump
 - `--S=FILE`: `ss -peaonmi` dump
 
-## Environment Variables
+## 🔧 Environment Variables
 
 `xsyscheck` is highly configurable via `XSOS_*` variables. Core groups:
 
@@ -152,7 +152,7 @@ xsyscheck [-?|-h|--help]
   - `XSOS_SCRUB_SERIAL`
   - `XSOS_SCRUB_PROXYUSERPASS`
 
-## Examples
+## 🧪 Examples
 
 ```bash
 # Default module set
@@ -170,15 +170,14 @@ xsyscheck [-?|-h|--help]
 # Privacy-safe output for sharing
 ./xsyscheck --all --scrub --nocolor > triage.txt
 ```
-<img width="792" height="751" alt="image" src="https://github.com/user-attachments/assets/8957a9dc-912a-430b-b1fe-b742f0b0420a" />
 
-## Compatibility Notes
+## 🧱 Compatibility Notes
 
 - BASH v4+ is required for some features (associative arrays, special options, advanced modules).
 - On very old systems (for example RHEL5-era shells), behavior is reduced as expected.
 - Root privileges are recommended for BIOS/multipath/ethtool completeness on live hosts.
 
-## Maintainer
+## 👤 Maintainer
 
 Fork maintainer: **Leonardo Berbert**
 
