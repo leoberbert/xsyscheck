@@ -327,16 +327,7 @@ HELP_EXTENDED() {
   HELP_OPTS_CONTENT
   HELP_OPTS_DISPLAY
   echo "
-If no content options are specified, xsos parses the environment variable
-XSOS_DEFAULT_VIEW to figure out what information to display. If this variable
-is unset at runtime, it is initialized internally as follows:
-
-   XSOS_DEFAULT_VIEW='os'
-
-Tweak it to preference by adding additional space-separated MODULE statements,
-where MODULE is the same as the long option (e.g. mem, ethtool, netdev). Note
-that the --net alias option cannot be used for this purpose. Also note that the
--a / --all option has it's own environment variable: XSOS_ALL_VIEW
+If no content options are specified, xsyscheck now defaults to the same module set as -a/--all (controlled by XSOS_ALL_VIEW).
 
 If SOSREPORT ROOT isn't provided, the data will be gathered from the localhost;
 however, bios, multipath, and ethtool output will only be displayed if running
@@ -523,9 +514,10 @@ elif [[ $BASH_VERSINFO -lt 4 && -n $sfile ]]; then
   echo "Special options require use of BASH associative arrays" >&2
   echo "i.e., BASH v4.0 or higher (RHEL6/Fedora11 and above)" >&2
   exit 32
-# Use default view if no content options specified
+# Default behavior: same as -a/--all when no content options are specified
 elif [[ -z $opts ]]; then
-  for module in $XSOS_DEFAULT_VIEW; do eval $module=y; done
+  all=y
+  for module in $XSOS_ALL_VIEW; do eval $module=y; done
 # Else, if "all" option specified, set full view
 elif [[ -n $all ]]; then
   for module in $XSOS_ALL_VIEW; do eval $module=y; done
