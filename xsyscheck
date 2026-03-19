@@ -3589,352 +3589,160 @@ SSCHECK(){
     fi
   fi
 
-  [[ -z $ps_source || -z $ss_input ]] && return
+  [[ -z $ss_input ]] && return
 
-  # These are used later to print the name, cpu and mem of the process owner of the socket.
-  ps_data=$(tr -d '()[]' <<<"$ps_source" | tr -s ' ')
-  pids=$(cut -d' ' -f2 <<<"$ps_data")
-  cmds=$(cut -d' ' -f11 <<<"$ps_data")
-  cpus=$(cut -d' ' -f3 <<<"$ps_data")
-  mems=$(cut -d' ' -f4 <<<"$ps_data")
-
-  # These fields have format "name value". Add them a ":" so they have the same format as the other fields (name: value)
-  sed \
+  # Make key:value parsing easier for send/pacing/delivered fields.
+  ss_input=$(sed \
     -e 's/ send / send:/' \
     -e 's/ pacing_rate / pacing_rate:/' \
     -e 's/ delivered / delivered:/' \
-    -e 's/ delivery_rate / delivery_rate:/' <<<"$ss_input" |
+    -e 's/ delivery_rate / delivery_rate:/' <<<"$ss_input")
 
-    gawk -vpid_list="$pids" -vcmd_list="$cmds" -vmem_list="$mems" -vcpu_list="$cpus" \
-    -vcheck_fields_str="${XSOS_SS_CHECK_FIELDS}" \
-    -vI="$XSOS_INDENT_H1" -vcH1="${c[H1]}" -vcH2="${c[H2]}" -vcH3="${c[H3]}" -vc0="${c[0]}" '
+  # Remove punctuation noise from ps output to map pid -> cpu/mem/cmd.
+  ps_data=$(tr -d '()[]' <<<"$ps_source" | tr -s ' ')
 
-    BEGIN{
-
-      split(pid_list, pids, " ")
-      split(cmd_list, cmds, " ")
-      split(mem_list, mems, " ")
-      split(cpu_list, cpus, " ")
-
-      for(i in pids){
-        pid = pids[i]
-        pidcmd[pid]["cmd"] = cmds[i]
-        pidcmd[pid]["mem"] = mems[i]
-        pidcmd[pid]["cpu"] = cpus[i]
+  awk -vPS="$ps_data" \
+      -vCHECK="$XSOS_SS_CHECK_FIELDS" \
+      -vI="$XSOS_INDENT_H1" \
+      -vcH1="${c[H1]}" -vcH2="${c[H2]}" -vcH3="${c[H3]}" -vc0="${c[0]}" '
+    function trim(s){ sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+    function add_signal(txt){ if (txt == "") return; if (signals == "") signals = txt; else signals = signals "; " txt }
+    function parse_kv(extra_line, key,   mpos, tok, v, n){
+      mpos = match(extra_line, key ":[^[:space:]]+")
+      if (!mpos) return ""
+      tok = substr(extra_line, RSTART, RLENGTH)
+      sub(/^[^:]*:/, "", tok)
+      v = tok
+      gsub(/[,)]/, "", v)
+      n = v
+      sub(/[kKmMgGtT][bB]$/, "", n)
+      if (n ~ /^[0-9]+(\.[0-9]+)?$/) {
+        if (n + 0 > 0) return key "=" v
+        return ""
       }
-
-      split(check_fields_str, check_fields, "|") 
-
+      if (v != "" && v != "0") return key "=" v
+      return ""
     }
+    function flush_session(   i, key, sig, pidv, namev, cpuv, memv, cmdv, p, n, tmp){
+      if (proto == "") return
 
-    # Returns the value part of a key-value pair with format "key: value"
-    function valueof(keyvalue){
-      split(keyvalue, splitted, ":")
-      return splitted[2]
-    }
+      state_count[state]++
+      signals = ""
 
-    function print_stream_summary(params){
-      for (key in params){
-        print "KEY "key, params[key]
-      }
-    }
+      for (i = 1; i <= ncheck; i++) {
+        key = check_keys[i]
+        if (key == "") continue
 
-    {
-    #if (/^[^\t].*/){
-    if (/^(tcp|udp|sctp)/){
-
-      # New session starts. Clear everything
-      delete params
-
-      params["proto"] = $1
-      params["state"] = $2
-      params["rq"] = $3
-      params["tq"] = $4
-      params["local"] = $5
-      params["peer"] = $6
-
-      # Initialize bools
-      params["ts"] = 0
-      params["sack"] = 0
-      params["htcp"] = 0
-      params["app_limited"] = 0
-      params["v6only"] = 0
-
-      # Index for everything related to this stream, Used later when printing
-      params["string"] = sprintf("%s❚%s❚%s" , params["proto"], params["local"], params["peer"])
-
-      # Figure out what the other info provided is and parse it.
-      for (i=7; i<NF; i++){
-        switch($i){
-          case /^users/:
-            # Format: users:(("user1",pid=PID,fd=FD),"user2",pid=PID2,fd=FD2, ...)
-            # First we extract all the definitions
-            match($i, /^users:\(\((.*)\)$/, users0);
-            user_list_n = split(users0[1], user_list, /\),?\(?/)
-
-            # split each user definition and add it
-            for (j=1; j<user_list_n; j++){
-              userdef_n = split(user_list[j], userdef ,",")
-              gsub(/"/, "", userdef[1])
-              gsub(/pid=/, "", userdef[2])
-              gsub(/fd=/, "", userdef[3])
-              params["users"][j]["name"] = userdef[1]
-              params["users"][j]["pid"] = userdef[2]
-              params["users"][j]["fd"] = userdef[3]
-            }
-
-            break
-
-          case /^"timer"/:
-            # Format: timer:(<timer_name>,<expire_time>,<retrans>)
-            match($i, /^timer:\(\)$/, timer)
-            split(timer, ",", timer_params)
-            params["timer_name"] =     timer_params[1]
-            params["timer_expire"] =   timer_params[2]
-            params["timer_retrans"] =  timer_params[3];                           break
-
-
-          case /^ino:/:               params["ino"] =           valueof($i);      break
-          case /^sk:/:                params["cookie"] =        valueof($i);      break
-          case /^uid:/:               params["uid"] =           valueof($i);      break
-          case /^v6only:/:            params["v6only"] =        valueof($i);      break
+        if (key == "rq") {
+          if (rq + 0 > 0) add_signal("rq=" rq)
+          continue
         }
-      }
-    }
-    else if (/^[[:space:]]+/ && params["proto"]){
-      # The second line provides more fields. We keep parsing them and adding them to "params"
-
-      for (i=1; i<=NF; i++){
-        switch($i){
-
-          # Boolean fields. We only check for the presence of these ones.
-          case /^cubic$/:             params["congestion"] =     "cubic";         break
-          case /^vegas$/:             params["congestion"] =     "vegas";         break
-          case /^ts$/:                params["ts"] =             1;               break
-          case /^sack$/:              params["sack"] =           1;               break
-          case /^htcp$/:              params["htcp"] =           1;               break
-          case /^app_limited$/:       params["app_limited"] =    1;               break
-
-          # Most of the other fields have format "name: value"
-          case /^send:/:              params["send"] =          valueof($i);      break
-          case /^delivered:/:         params["delivered"] =     valueof($i);      break
-          case /^pacing_rate:/:       params["pacing_rate"] =   valueof($i);      break
-          case /^delivery_rate:/:     params["delivery_rate"] = valueof($i);      break
-          case /^rto:/:               params["rto"] =           valueof($i);      break
-          case /^ato:/:               params["ato"] =           valueof($i);      break
-          case /^mss:/:               params["mss"] =           valueof($i);      break
-          case /^pmtu:/:              params["pmtu"] =          valueof($i);      break
-          case /^rcvmss/:             params["rcvmss"] =        valueof($i);      break
-          case /^advmss:/:            params["advmss"] =        valueof($i);      break
-          case /^cwnd:/:              params["cwnd"] =          valueof($i);      break
-          case /^ssthresh:/:          params["ssthresh"] =      valueof($i);      break
-          case /^bytes_sent:/:        params["bytes_sent"] =    valueof($i);      break
-          case /^bytes_retrans:/:     params["bytes_retrans"] = valueof($i);      break
-          case /^bytes_acked:/:       params["bytes_acked"] =   valueof($i);      break
-          case /^bytes_received:/:    params["bytes_received"] =valueof($i);      break
-          case /^segs_out:/:          params["segs_out"] =      valueof($i);      break
-          case /^segs_in:/:           params["segs_in"] =       valueof($i);      break
-          case /^data_segs_out:/:     params["data_segs_out"] = valueof($i);      break
-          case /^data_segs_in:/:      params["data_segs_in"] =  valueof($i);      break
-          case /^delivered:/:         params["delivered"] =     valueof($i);      break
-          case /^rwnd_limited:/:      params["rwnd_limited"] =  valueof($i);      break
-          case /^dsack_dups:/:        params["dsack_dups"] =    valueof($i);      break
-          case /^rcv_rtt:/:           params["rcv_rtt"] =       valueof($i);      break
-          case /^rcv_space:/:         params["rcv_space"] =     valueof($i);      break
-          case /^rcv_ssthresh:/:      params["rcv_sshthresh"] = valueof($i);      break
-          case /^rcv_notsent:/:       params["rcv_notsent"] =   valueof($i);      break
-          case /^minrtt:/:            params["minrtt"] =        valueof($i);      break
-          case /^lastsnd:/:           params["lastsnd"] =       valueof($i);      break
-          case /^lastrcv:/:           params["lastrcv"] =       valueof($i);      break
-          case /^lastack:/:           params["lastack"] =       valueof($i);      break
-          case /^reordering:/:        params["reordering"] =    valueof($i);      break
-          case /^unacked:/:           params["unacked"] =       valueof($i);      break
-          case /^lost:/:              params["lost"] =          valueof($i);      break
-          case /^backoff:/:           params["backoff"] =       valueof($i);      break
-          case /^reord_seen:/:        params["reord_seen"] =    valueof($i);      break
-          case /^notsent:/:           params["notsent"] =       valueof($i);      break
-
-          # Some exceptions with a completely different format:
-          
-          #skmem:(r<rmem_alloc>,rb<rcv_buf>,t<wmem_alloc>,tb<snd_buf>,
-          #              f<fwd_alloc>,w<wmem_queued>,o<opt_mem>,
-          #              bl<back_log>,d<sock_drop>)
-          case /^skmem:/:
-
-            match($i, /^skmem:\(r([0-9]+),rb([0-9]+),t([0-9]+),tb([0-9]+),f([0-9]+),w([0-9]+),o([0-9]+),bl([0-9]+),d([0-9]+)/, skmem)
-
-            params["rmem_alloc"] =    skmem[1]
-            params["rmem_buf"] =      skmem[2]
-            params["wmem_alloc"] =    skmem[3]
-            params["snd_buf"] =       skmem[4]
-            params["fwd_alloc"] =     skmem[5]
-            params["wmem_queued"] =   skmem[6]
-            params["ropt_mem"] =      skmem[7]
-            params["back_log"] =      skmem[8]
-            params["sock_drop"] =     skmem[9];          break
-
-          # busy:NNN.NNms
-          case /^busy:/:              match($i, /^busy:([0-9]+)ms/,   busyms)
-                                      params["busyms"] =         busyms[1];        break
-
-          # wscale:<snd_wscale>:<rcv_wscale>
-          case /^wscale:/:            #split ($i, wscale, ",")
-                                      match($i, /^wscale:([0-9]+),([0-9]+)/, wscale)
-                                      params["snd_wscale"] =     wscale[1]
-                                      params["rcv_wscale"] =     wscale[2];         break
-
-          # rtt:<rtt>/<rttvar>
-          case /^rtt:/:                split ($i, rtt, "/")
-                                      params["rtt"] =           rtt[1]
-                                      params["rttvar"] =         rtt[2];           break
-
-          # retrans:<retrans_current>/<retrans_total>
-          case /^retrans:/:            split ($i, retrans, "/")
-                                      params["retrans_current"] = retrans[1]
-                                      params["retrans_total"] =   retrans[2];     break
-        } # end switch
-      } # end for
-
-      # Next line will be a new session, so here we save the interesting fields of the session
-
-      # Increment global counters for the protocol and the state
-      counters["proto"][ params["proto"] ] += 1
-      counters["state"][ params["state"] ] += 1
-
-      # Check fields provided via XSOS_SS_CHECK_FIELDS. If any of them is >0, then we add this session to be printed later
-      added = 0
-      for(x in check_fields){
-        key = check_fields[x]
-
-        if(params[key] > 0){
-          string = params["string"]
-          sessions[string][key]["val"] = params[key]
-          added = 1
+        if (key == "tq") {
+          if (tq + 0 > 0) add_signal("tq=" tq)
+          continue
         }
-      }
 
-      # If this session will be printed, then we want to have some extra info
-      if (added == 1){
-        if(typeof(params["users"]) == "array"){
-          for (user_n in params["users"]){
-            sessions[string]["cmd"][user_n]["pid"] = params["users"][user_n]["pid"]
-            sessions[string]["cmd"][user_n]["name"] = params["users"][user_n]["name"]
-          }
-        }else{
-          #print("NOT AN ARRAY", string)
+        sig = parse_kv(extra, key)
+        if (sig != "") {
+          add_signal(sig)
+          continue
         }
-        sessions[string]["proto"] = params["proto"]
-        sessions[string]["local"] = params["local"]
-        sessions[string]["peer"] = params["peer"]
-      }
-    } # else if (^\t /)
-  }
-  function print_table(){
 
-    # Prepare column names
-    _col_names[1] = "Proto"
-    _col_names[2] = "Local"
-    _col_names[3] = "Peer"
-    for (x in check_fields){
-      _col_names[length(_col_names)+1] = check_fields[x]
-    }
-    _col_names[length(_col_names)+1] = "%CPU"
-    _col_names[length(_col_names)+1] = "%MEM"
-    _col_names[length(_col_names)+1] = "User"
-    _col_names[length(_col_names)+1] = "Command"
-
-    # Prepare values
-    i = 1
-    for (string in sessions){
-      _values[i][1] = sessions[string]["proto"]
-      _values[i][2] = sessions[string]["local"]
-      _values[i][3] = sessions[string]["peer"]
-
-      for (j in check_fields){
-        key = check_fields[j]
-        _values[i][length(_values[i])+1] = sessions[string][key]["val"]
+        if (extra ~ "(^|[[:space:]])" key "([[:space:]]|$)")
+          add_signal(key "=1")
       }
 
-      _pid = sessions[string]["cmd"][1]["pid"]
-      _values[i][length(_values[i])+1] = pidcmd[_pid]["cpu"]
-      _values[i][length(_values[i])+1] = pidcmd[_pid]["mem"]
-      _values[i][length(_values[i])+1] = sessions[string]["cmd"][1]["name"]
-      _values[i][length(_values[i])+1] = pidcmd[_pid]["cmd"]
-      i++
-    }
+      if (signals != "") {
+        pidv = "-"
+        namev = "-"
+        cpuv = "-"
+        memv = "-"
+        cmdv = "-"
 
-    # Compute initial widths based on the column names
-    for (i in _col_names){
-      _col_widths[i] = length(_col_names[i])
-    }
- 
-    # Compute final widths based on the actual row values
-    for (i in _values){
-      for (j in _values[i]){
-        __value_len = length(_values[i][j])
-        if(__value_len > _col_widths[j]){ _col_widths[j] = __value_len }
-      }
-    }
+        if (match(extra, /pid=[0-9]+/))
+          pidv = substr(extra, RSTART + 4, RLENGTH - 4)
 
-    # Print headers + underscores
-    # Columns containing numbers are right aligned for clarity
-    printf(I""I""cH3)
-    for (i in _col_names){
-      if (_values[1][i] + 0 == _values[1][i]){ 
-        # First row has a number, we assume the same col in all rows are numbers.
-        printf("%*s ", _col_widths[i], _col_names[i])
-      }else{
-        printf("%*-s ", _col_widths[i], _col_names[i])
-      }
-    }
-    printf("\n"I""I)
-    for (i in _col_widths){
-      for(j=1; j<= _col_widths[i]; j++){
-          printf("-")
-      }
-      printf(" ")
-    }
-
-    printf(c0)
-
-    # Finally, print the values
-    for (i in _values){
-      printf("\n"I""I)
-      for(j in _values[i]){
-        if (_values[i][j] + 0 == _values[i][j]){
-          # its a number, align: right
-          printf("%*s ", _col_widths[j], _values[i][j])
-        }else{
-          printf("%*-s ", _col_widths[j], _values[i][j])
+        if (match(extra, /users:\(\("[^"]+"/)) {
+          tmp = substr(extra, RSTART, RLENGTH)
+          sub(/^users:\(\("/, "", tmp)
+          sub(/".*$/, "", tmp)
+          namev = tmp
         }
+
+        if (pidv in p_cpu) cpuv = p_cpu[pidv]
+        if (pidv in p_mem) memv = p_mem[pidv]
+        if (pidv in p_cmd) cmdv = p_cmd[pidv]
+
+        rows[++nrows] = proto "\034" state "\034" local "\034" peer "\034" signals "\034" cpuv "\034" memv "\034" namev "\034" cmdv
+      }
+
+      proto = ""
+      state = ""
+      rq = ""
+      tq = ""
+      local = ""
+      peer = ""
+      extra = ""
+    }
+
+    BEGIN {
+      nps = split(PS, ps_lines, "\n")
+      for (i = 1; i <= nps; i++) {
+        line = trim(ps_lines[i])
+        if (line == "" || line ~ /^USER[[:space:]]+/) continue
+        nf = split(line, f, /[[:space:]]+/)
+        pid = f[2]
+        if (pid !~ /^[0-9]+$/) continue
+        p_cpu[pid] = f[3]
+        p_mem[pid] = f[4]
+        cmd = (nf >= 11 ? f[11] : "-")
+        for (j = 12; j <= nf; j++) cmd = cmd " " f[j]
+        p_cmd[pid] = cmd
+      }
+
+      ncheck = split(CHECK, check_keys, /\|/)
+    }
+
+    /^(tcp|udp|sctp)[[:space:]]/ {
+      flush_session()
+      proto = $1
+      state = $2
+      rq = $3
+      tq = $4
+      local = $5
+      peer = $6
+      extra = $0
+      next
+    }
+
+    /^[[:space:]]+/ {
+      if (proto != "") extra = extra " " $0
+      next
+    }
+
+    END {
+      flush_session()
+
+      printf(cH1 "SS CHECK" c0 "\n")
+      printf(I cH2 "Connection states (ss State):" c0 "\n")
+      printf(I I cH3 "State            Count\n" c0)
+      for (s in state_count)
+        printf(I I "%-16s %d\n", s, state_count[s])
+
+      printf(I cH2 "Sessions:" c0 "\n")
+      if (nrows == 0) {
+        printf(I I "[No sessions matched XSOS_SS_CHECK_FIELDS]\n")
+        exit
+      }
+
+      printf(I I cH3 "Proto State        Local                    Peer                     Signals                      %%CPU %%MEM User     Command\n" c0)
+      for (i = 1; i <= nrows; i++) {
+        n = split(rows[i], p, "\034")
+        printf(I I "%-5s %-12s %-24s %-24s %-28s %4s %4s %-8s %s\n", p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9])
       }
     }
-    printf("\n")
-  }
-
-  function print_totals(){
-    for (by in session_c){
-      for (key in counters[by]){
-        printf("%s=%s: %d \n", by, key, counters[by][key])
-      }
-    }
-  }
-
-  function print_state_summary(){
-    printf(I""cH2"Connection states (ss State):\n"c0)
-    printf(I""I""cH3"State            Count\n"c0)
-    for (state in counters["state"])
-      printf(I""I"""%-16s %d\n", state, counters["state"][state])
-  }
-
-  END{
-  printf(cH1"%s"c0"\n", "SS CHECK")
-  print_state_summary()
-  printf(I""cH2"Sessions:\n"c0)
-    print_table()
-  }'
+  ' <<<"$ss_input"
 }
-
 FIREWALL(){
   local iptables_vnxL nft_list_ruleset systemctl_status_all systemctl_status_input
 
